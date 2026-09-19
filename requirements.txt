@@ -10,3 +10,7 @@ pykakasi
 pypinyin
 hangul-romanize
 scipy
+onnxruntime
+torch
+torchaudio
+huggingface-hub
