@@ -1,0 +1,54 @@
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+module = [
+    "soundcard",
+    "RealtimeSTT",
+    "RealtimeSTT.*",
+    "hangul_romanize",
+    "hangul_romanize.rule",
+    "pykakasi",
+    "pypinyin",
+    "pypinyin.*",
+    "scipy",
+    "scipy.signal",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "src.romanizer.text_romanizer"
+disallow_untyped_calls = false
+
+[tool.pylint.main]
+source-roots = ["."]
+extension-pkg-allow-list = ["PySide6", "soundcard"]
+ignored-modules = ["RealtimeSTT"]
+
+[tool.pylint."messages control"]
+disable = [
+    "too-many-instance-attributes",
+    "too-few-public-methods",
+    "invalid-name",
+    "broad-exception-caught",
+    "duplicate-code",
+    "no-member",
+    "too-many-statements",
+    "too-many-locals",
+    "ungrouped-imports",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

@@ -1,0 +1,12 @@
+soundcard
+numpy
+RealtimeSTT
+faster-whisper
+PySide6
+piper-tts
+requests
+httpx
+pykakasi
+pypinyin
+hangul-romanize
+scipy
