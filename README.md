@@ -1,4 +1,4 @@
-# LiveTrans
+# LiveTranslate
 
 Real-time desktop audio transcription, romanization, and translation overlay for Windows and Linux.
 
