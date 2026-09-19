@@ -1,14 +1,14 @@
 # LiveTrans
 
-Real-time desktop audio transcription, romanization, and translation overlay for Windows.
+Real-time desktop audio transcription, romanization, and translation overlay for Windows and Linux.
 
-Captures system audio output (WASAPI loopback), streams it into Faster-Whisper for live transcription, identifies speakers using CAM++ diarization, romanizes CJK text (Romaji, Pinyin, Hangul), and optionally translates into English or French via a local LLM endpoint (TranslateGemma / llama.cpp).
+Captures system audio output (WASAPI loopback on Windows, PulseAudio/PipeWire monitor on Linux), streams it into Faster-Whisper for live transcription, identifies speakers using CAM++ diarization, romanizes CJK text (Romaji, Pinyin, Hangul), and optionally translates into English or French via a local LLM endpoint (TranslateGemma / llama.cpp).
 
 ---
 
 ## Features
 
-- **Audio Loopback Capture**: Captures any playing audio directly via WASAPI loopback without virtual audio cables.
+- **Audio Loopback Capture**: Captures any playing audio directly via system loopback (WASAPI on Windows, PulseAudio/PipeWire monitor on Linux) without virtual audio cables.
 - **Streaming STT**: Low-latency live speech recognition powered by Faster-Whisper.
 - **Speaker Diarization**: Online speaker identification and turn-splitting using CAM++ ONNX embeddings.
 - **Phonetic Romanization**: Real-time phonetic transliteration for Japanese (Romaji), Chinese (Pinyin), and Korean (Revised Romanization).
@@ -21,10 +21,17 @@ Captures system audio output (WASAPI loopback), streams it into Faster-Whisper f
 
 ## Requirements
 
-- Windows 10 / 11
-- Python 3.10 – 3.12
-- NVIDIA GPU with CUDA recommended (Whisper `base` runs alongside TranslateGemma-4B within 6GB VRAM)
-- Optional: `llama.cpp` server running TranslateGemma-4B (or another translation model)
+- **OS**: Windows 10 / 11 or Linux (Ubuntu, Debian, Fedora, Arch, etc. with PulseAudio or PipeWire)
+- **Python**: 3.10 – 3.12
+- **GPU**: NVIDIA GPU with CUDA recommended (Whisper `base` runs alongside TranslateGemma-4B within 6GB VRAM)
+- **Optional**: `llama.cpp` server running TranslateGemma-4B (or another translation model)
+- **Linux system dependencies** (if not already installed):
+  ```bash
+  # Debian / Ubuntu
+  sudo apt install libpulse0 pulseaudio-utils
+  # Arch Linux
+  sudo pacman -S libpulse
+  ```
 
 ---
 
@@ -37,10 +44,16 @@ Captures system audio output (WASAPI loopback), streams it into Faster-Whisper f
    ```
 
 2. **Create and activate a virtual environment:**
-   ```bash
-   python -m venv .venv
-   .venv\Scripts\activate
-   ```
+   - **Windows:**
+     ```bash
+     python -m venv .venv
+     .venv\Scripts\activate
+     ```
+   - **Linux:**
+     ```bash
+     python3 -m venv .venv
+     source .venv/bin/activate
+     ```
 
 3. **Install dependencies:**
    ```bash
@@ -50,6 +63,11 @@ Captures system audio output (WASAPI loopback), streams it into Faster-Whisper f
    > **Note (CUDA Support)**: If you want GPU acceleration for Whisper and PyTorch, install the matching CUDA wheel:
    > ```bash
    > pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+   > ```
+   >
+   > **Linux Wayland Note**: If your desktop compositor restricts transparent frameless windows, launch with X11 backend:
+   > ```bash
+   > QT_QPA_PLATFORM=xcb python main.py
    > ```
 
 ---
