@@ -21,7 +21,9 @@ class ControlHeaderWidget(QWidget):
 
     Attributes:
         speaker_changed (Signal): Emits selected SoundCard speaker object.
-        language_changed (Signal): Emits selected target language code ('en' or 'fr').
+        input_language_changed (Signal): Emits selected input language code (e.g. 'auto', 'en').
+        language_changed (Signal): Emits selected target translation language code ('en' or 'fr').
+        pace_changed (Signal): Emits selected conversational pace mode string.
         pause_toggled (Signal): Emits True when paused, False when listening.
         pin_toggled (Signal): Emits current always-on-top pinned status.
         clear_requested (Signal): Emits when user requests transcript clearing.
@@ -29,7 +31,9 @@ class ControlHeaderWidget(QWidget):
     """
 
     speaker_changed: Signal = Signal(object)
+    input_language_changed: Signal = Signal(str)
     language_changed: Signal = Signal(str)
+    pace_changed: Signal = Signal(str)
     pause_toggled: Signal = Signal(bool)
     pin_toggled: Signal = Signal(bool)
     clear_requested: Signal = Signal()
@@ -73,8 +77,8 @@ class ControlHeaderWidget(QWidget):
                 border-radius: 4px;
                 padding: 3px 8px;
                 font-size: 11px;
-                min-width: 140px;
-                max-width: 200px;
+                min-width: 110px;
+                max-width: 160px;
             }
             QComboBox::drop-down {
                 border: none;
@@ -88,11 +92,49 @@ class ControlHeaderWidget(QWidget):
         self.combo_speaker.currentIndexChanged.connect(self._handle_speaker_changed)
         layout.addWidget(self.combo_speaker)
 
-        # Target language dropdown (English / French)
+        # Audio input language dropdown (Auto / zh / ja / ko / en / fr / es / de / ...)
+        self.combo_input_lang: QComboBox = QComboBox()
+        self.combo_input_lang.setToolTip("Select Spoken Audio Language (Whisper Input STT)")
+        self.combo_input_lang.addItem("🎙 In: Auto", userData="auto")
+        self.combo_input_lang.addItem("🎙 In: English (en)", userData="en")
+        self.combo_input_lang.addItem("🎙 In: Français (fr)", userData="fr")
+        self.combo_input_lang.addItem("🎙 In: 中文 (zh)", userData="zh")
+        self.combo_input_lang.addItem("🎙 In: 日本語 (ja)", userData="ja")
+        self.combo_input_lang.addItem("🎙 In: 한국어 (ko)", userData="ko")
+        self.combo_input_lang.addItem("🎙 In: Español (es)", userData="es")
+        self.combo_input_lang.addItem("🎙 In: Deutsch (de)", userData="de")
+        self.combo_input_lang.addItem("🎙 In: Italiano (it)", userData="it")
+        self.combo_input_lang.addItem("🎙 In: Português (pt)", userData="pt")
+        self.combo_input_lang.addItem("🎙 In: Русский (ru)", userData="ru")
+        self.combo_input_lang.addItem("🎙 In: العربية (ar)", userData="ar")
+        self.combo_input_lang.setStyleSheet("""
+            QComboBox {
+                background-color: rgba(46, 52, 64, 0.9);
+                color: #E5E9F0;
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                border-radius: 4px;
+                padding: 3px 6px;
+                font-size: 11px;
+                min-width: 90px;
+                max-width: 110px;
+            }
+            QComboBox::drop-down {
+                border: none;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #2E3440;
+                color: #ECEFF4;
+                selection-background-color: #4C566A;
+            }
+        """)
+        self.combo_input_lang.currentIndexChanged.connect(self._handle_input_language_changed)
+        layout.addWidget(self.combo_input_lang)
+
+        # Target translation output language dropdown (English / French)
         self.combo_language: QComboBox = QComboBox()
-        self.combo_language.setToolTip("Select Target Translation Language")
-        self.combo_language.addItem("English (en)", userData="en")
-        self.combo_language.addItem("Français (fr)", userData="fr")
+        self.combo_language.setToolTip("Select Translation Output Language (LLM Target)")
+        self.combo_language.addItem("🌐 Out: English (en)", userData="en")
+        self.combo_language.addItem("🌐 Out: Français (fr)", userData="fr")
         self.combo_language.setStyleSheet("""
             QComboBox {
                 background-color: rgba(46, 52, 64, 0.9);
@@ -101,7 +143,8 @@ class ControlHeaderWidget(QWidget):
                 border-radius: 4px;
                 padding: 3px 6px;
                 font-size: 11px;
-                max-width: 95px;
+                min-width: 90px;
+                max-width: 115px;
             }
             QComboBox::drop-down {
                 border: none;
@@ -114,6 +157,35 @@ class ControlHeaderWidget(QWidget):
         """)
         self.combo_language.currentIndexChanged.connect(self._handle_language_changed)
         layout.addWidget(self.combo_language)
+
+        # Conversational pace mode dropdown (Auto / Fast / Medium / Accurate)
+        self.combo_pace: QComboBox = QComboBox()
+        self.combo_pace.setToolTip("Select Conversational Pace Preset (VAD & Speaker Clustering)")
+        self.combo_pace.addItem("🔄 Auto", userData="auto")
+        self.combo_pace.addItem("⚡ Fast", userData="fast")
+        self.combo_pace.addItem("⚖ Med", userData="medium")
+        self.combo_pace.addItem("🎯 Acc", userData="accurate")
+        self.combo_pace.setStyleSheet("""
+            QComboBox {
+                background-color: rgba(46, 52, 64, 0.9);
+                color: #E5E9F0;
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                border-radius: 4px;
+                padding: 3px 6px;
+                font-size: 11px;
+                max-width: 80px;
+            }
+            QComboBox::drop-down {
+                border: none;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #2E3440;
+                color: #ECEFF4;
+                selection-background-color: #4C566A;
+            }
+        """)
+        self.combo_pace.currentIndexChanged.connect(self._handle_pace_changed)
+        layout.addWidget(self.combo_pace)
 
         # Pause / Resume toggle button
         self._is_paused: bool = False
@@ -187,6 +259,21 @@ class ControlHeaderWidget(QWidget):
                 break
         self.combo_language.blockSignals(False)
 
+    def set_pace_mode(self, pace_mode: str) -> None:
+        """
+        Sets the active pace mode in the dropdown.
+
+        Args:
+            pace_mode (str): 'auto', 'fast', 'medium', or 'accurate'.
+        """
+
+        self.combo_pace.blockSignals(True)
+        for idx in range(self.combo_pace.count()):
+            if self.combo_pace.itemData(idx) == pace_mode:
+                self.combo_pace.setCurrentIndex(idx)
+                break
+        self.combo_pace.blockSignals(False)
+
     def _style_button(
         self,
         button: QPushButton,
@@ -230,6 +317,33 @@ class ControlHeaderWidget(QWidget):
         if speaker is not None:
             self.speaker_changed.emit(speaker)
 
+    def set_input_language(self, lang_code: str) -> None:
+        """
+        Sets the active selection in the audio input language dropdown.
+
+        Args:
+            lang_code (str): Language code (e.g. 'auto', 'zh', 'ja', 'en', etc.).
+        """
+
+        self.combo_input_lang.blockSignals(True)
+        target: str = lang_code.lower() if lang_code else "auto"
+        for i in range(self.combo_input_lang.count()):
+            if str(self.combo_input_lang.itemData(i)) == target:
+                self.combo_input_lang.setCurrentIndex(i)
+                break
+        self.combo_input_lang.blockSignals(False)
+
+    def _handle_input_language_changed(self, index: int) -> None:
+        """
+        Emits signal when user selects a different audio input language.
+
+        Args:
+            index (int): Dropdown combo index.
+        """
+
+        lang_code: str = str(self.combo_input_lang.itemData(index) or "auto")
+        self.input_language_changed.emit(lang_code)
+
     def _handle_language_changed(self, index: int) -> None:
         """
         Emits signal when user selects a different translation language.
@@ -240,6 +354,17 @@ class ControlHeaderWidget(QWidget):
 
         lang_code: str = str(self.combo_language.itemData(index))
         self.language_changed.emit(lang_code)
+
+    def _handle_pace_changed(self, index: int) -> None:
+        """
+        Emits signal when user selects a different conversational pace mode.
+
+        Args:
+            index (int): Dropdown combo index.
+        """
+
+        pace_code: str = str(self.combo_pace.itemData(index))
+        self.pace_changed.emit(pace_code)
 
     def _toggle_pause_state(self) -> None:
         """

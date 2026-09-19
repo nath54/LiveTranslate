@@ -3,19 +3,25 @@ Unit and integration tests for LiveTrans audio, romanization, and translation se
 """
 
 # Import Modules
-from unittest.mock import MagicMock
+from unittest.mock import patch, MagicMock
 from typing import Any
+import argparse
 import time
 
-import RealtimeSTT.core.realtime as r_realtime
 from numpy.typing import NDArray
+from PySide6.QtWidgets import QApplication
 import numpy as np
+import RealtimeSTT.core.realtime as r_realtime
 
-from src.config import AppConfig, STTConfig, TranslationConfig
-from src.translation import GemmaTranslator
-from src.romanizer import TextRomanizer
-from src.audio import AudioResampler
+from main import build_argument_parser
+from src.ui import LiveTransOverlay
 from src.stt import WhisperStreamer
+from src.audio import AudioResampler
+from src.romanizer import TextRomanizer
+from src.diarization import SpeakerDiarizer
+from src.translation import GemmaTranslator
+from src.ui.device_selector import ControlHeaderWidget
+from src.config import AppConfig, STTConfig, PACE_PRESETS, DiarizationConfig, TranslationConfig
 
 
 def test_audio_resampler() -> None:
@@ -261,3 +267,302 @@ def test_whisper_streamer_punctuation_and_duration_cutoff() -> None:
     # Verify stop() was invoked to finalize long utterance
     mock_recorder.stop.assert_called_once()
     assert streamer.get_detected_language() == "ja"
+
+
+def test_pace_presets_configuration() -> None:
+    """
+    Verifies pace presets exist and hot-reloading switches STT and diarizer thresholds.
+    """
+
+    # 1. Verify preset map completeness
+    assert "fast" in PACE_PRESETS
+    assert "medium" in PACE_PRESETS
+    assert "accurate" in PACE_PRESETS
+
+    fast_p = PACE_PRESETS["fast"]
+    med_p = PACE_PRESETS["medium"]
+    acc_p = PACE_PRESETS["accurate"]
+
+    assert fast_p.post_speech_silence == 0.30
+    assert med_p.post_speech_silence == 0.50
+    assert acc_p.post_speech_silence == 0.75
+
+    # 2. Test streamer set_pace_mode hot-reload
+    stt_cfg: STTConfig = STTConfig()
+    diar_cfg: DiarizationConfig = DiarizationConfig()
+    diarizer: SpeakerDiarizer = SpeakerDiarizer(config=diar_cfg)
+
+    streamer: WhisperStreamer = WhisperStreamer(
+        config=stt_cfg,
+        diarizer=diarizer,
+        initial_pace_mode="auto",
+    )
+
+    # Attach mock recorder
+    mock_rec: MagicMock = MagicMock()
+    streamer._recorder = mock_rec  # pylint: disable=protected-access
+
+    # Switch to fast mode
+    streamer.set_pace_mode("fast")
+    assert streamer.config.post_speech_silence == 0.30
+    assert streamer.config.max_sentence_duration == 7.0
+    assert diarizer._active_threshold == 0.50  # pylint: disable=protected-access
+    assert mock_rec.post_speech_silence_duration == 0.30
+
+    # Switch to accurate mode
+    streamer.set_pace_mode("accurate")
+    assert streamer.config.post_speech_silence == 0.75
+    assert streamer.config.max_sentence_duration == 18.0
+    assert diarizer._active_threshold == 0.62  # pylint: disable=protected-access
+
+
+def test_speaker_diarizer_clustering_and_split() -> None:
+    """
+    Verifies SpeakerDiarizer clustering, centroid updates, and dialogue turn splitting.
+    """
+
+    config: DiarizationConfig = DiarizationConfig(
+        similarity_threshold=0.55,
+        min_speech_duration=0.1,
+    )
+    diarizer: SpeakerDiarizer = SpeakerDiarizer(config=config)
+
+    # Create dummy embeddings
+    emb1: NDArray[np.float32] = np.zeros(192, dtype=np.float32)
+    emb1[0] = 1.0  # Unit vector pointing along axis 0
+
+    emb2: NDArray[np.float32] = np.zeros(192, dtype=np.float32)
+    emb2[1] = 1.0  # Orthogonal vector (sim = 0.0)
+
+    # Mock extract_embedding to return synthetic vectors
+    current_emb: list[NDArray[np.float32]] = [emb1]
+
+    def mock_extract(
+        audio_slice: NDArray[np.float32],
+        sample_rate: int = 16000,
+    ) -> NDArray[np.float32]:
+        _ = (audio_slice, sample_rate)
+        return current_emb[0]
+
+    diarizer.extract_embedding = mock_extract  # type: ignore[method-assign]
+
+    dummy_audio: NDArray[np.float32] = np.zeros(16000, dtype=np.float32)
+
+    # First turn registers Speaker 1
+    spk_a, sim_a = diarizer.identify_or_register(dummy_audio)
+    assert spk_a == "Speaker 1"
+    assert sim_a == 1.0
+
+    # Same speaker returns Speaker 1 with high similarity
+    spk_same, sim_same = diarizer.identify_or_register(dummy_audio)
+    assert spk_same == "Speaker 1"
+    assert sim_same >= 0.99
+
+    # Different speaker registers Speaker 2
+    current_emb[0] = emb2
+    spk_b, sim_b = diarizer.identify_or_register(dummy_audio)
+    assert spk_b == "Speaker 2"
+    assert sim_b < 0.55
+
+    # Test dialogue split
+    words: list[dict[str, Any]] = [
+        {"word": "吃了没？", "start": 0.0, "end": 0.5},
+        {"word": "吃了！", "start": 0.6, "end": 1.0},
+    ]
+    split_audio: NDArray[np.float32] = np.zeros(16000, dtype=np.float32)
+
+    # Mock detect_speaker_change to indicate different speakers
+    diarizer.detect_speaker_change = (  # type: ignore[method-assign]
+        lambda audio_slice_a, audio_slice_b, sample_rate=16000: (True, 0.3)
+    )
+
+    turns = diarizer.split_dialogue(
+        text="吃了没？吃了！",
+        words_meta=words,
+        full_audio=split_audio,
+    )
+    assert len(turns) == 2, "Must split into two dialogue turns"
+    assert turns[0][0] == "吃了没？"
+    assert turns[1][0] == "吃了！"
+
+
+def test_adaptive_pace_tracking() -> None:
+    """
+    Verifies that real-time utterance statistics trigger automatic pace mode transitions.
+    """
+
+    stt_cfg: STTConfig = STTConfig()
+    streamer: WhisperStreamer = WhisperStreamer(
+        config=stt_cfg,
+        initial_pace_mode="auto",
+    )
+
+    # Mock recorder
+    mock_rec: MagicMock = MagicMock()
+    streamer._recorder = mock_rec  # pylint: disable=protected-access
+
+    # Simulate rapid chatter (short pauses, short utterances, high character rate)
+    for _ in range(4):
+        streamer._last_sentence_end = time.time() - 0.25  # pylint: disable=protected-access
+        streamer._update_adaptive_pace(  # pylint: disable=protected-access
+            duration_sec=1.5,
+            num_chars=12,
+        )
+
+    # Must have adapted to fast mode
+    assert streamer._active_preset == "fast"  # pylint: disable=protected-access
+    assert streamer.config.post_speech_silence == 0.30
+
+    # Simulate slow, deliberate speech (long pauses, long clauses)
+    for _ in range(4):
+        streamer._last_sentence_end = time.time() - 2.0  # pylint: disable=protected-access
+        streamer._update_adaptive_pace(  # pylint: disable=protected-access
+            duration_sec=8.0,
+            num_chars=20,
+        )
+
+    # Must have adapted to accurate mode
+    assert streamer._active_preset == "accurate"  # pylint: disable=protected-access
+    assert streamer.config.post_speech_silence == 0.75
+
+
+def test_cli_skip_languages_parsing() -> None:
+    """
+    Verifies that CLI argument parser correctly parses skip languages options.
+    """
+
+    parser: argparse.ArgumentParser = build_argument_parser()
+
+    # 1. Test default value
+    args_default: argparse.Namespace = parser.parse_args([])
+    assert args_default.skip_langs == "en,fr"
+
+    # 2. Test custom comma-separated list
+    args_custom: argparse.Namespace = parser.parse_args(["--skip-langs", "en,fr,es,de"])
+    assert args_custom.skip_langs == "en,fr,es,de"
+
+    # 3. Test empty string override
+    args_empty: argparse.Namespace = parser.parse_args(["--skip-langs", ""])
+    assert args_empty.skip_langs == ""
+
+
+def test_overlay_translation_bypass() -> None:
+    """
+    Verifies that spoken sentences in skip_languages or target_language bypass the LLM translator.
+    """
+
+    # Ensure QApplication exists for widget instantiation
+    _ = QApplication.instance() or QApplication([])
+
+    config: AppConfig = AppConfig()
+    config.translation.skip_languages = ["en", "fr"]
+    config.translation.target_language = "en"
+
+    mock_audio: MagicMock = MagicMock()
+    romanizer: TextRomanizer = TextRomanizer()
+    mock_translator: MagicMock = MagicMock()
+
+    overlay: LiveTransOverlay = LiveTransOverlay(
+        config=config,
+        audio_monitor=mock_audio,
+        romanizer=romanizer,
+        translator=mock_translator,
+    )
+
+    # 1. English is in skip_languages and matches target_language -> must bypass
+    overlay.on_final_transcription(text="Hello world", language="en")
+    mock_translator.translate.assert_not_called()
+
+    # 2. French is in skip_languages -> must bypass
+    overlay.on_final_transcription(text="Bonjour tout le monde", language="fr")
+    mock_translator.translate.assert_not_called()
+
+    # 3. Japanese is not in skip_languages -> must trigger background translation thread
+    with patch("threading.Thread") as mock_thread:
+        overlay.on_final_transcription(text="こんにちは", language="ja")
+        mock_thread.assert_called_once()
+
+    overlay.close()
+
+
+def test_whisper_streamer_dynamic_language() -> None:
+    """
+    Verifies that setting the audio input language updates config and language resolution.
+    """
+
+    stt_cfg: STTConfig = STTConfig(language="")
+    streamer: WhisperStreamer = WhisperStreamer(config=stt_cfg)
+
+    # 1. Default empty (auto)
+    assert streamer.config.language == ""
+
+    # 2. Set to Japanese
+    streamer.set_language("ja")
+    assert streamer.config.language == "ja"
+    assert streamer._resolve_language("Any text") == "ja"  # pylint: disable=protected-access
+
+    # 3. Set to French
+    streamer.set_language("FR")
+    assert streamer.config.language == "fr"
+    assert streamer._resolve_language("Bonjour") == "fr"  # pylint: disable=protected-access
+
+    # 4. Reset to auto
+    streamer.set_language("auto")
+    assert streamer.config.language == ""
+
+
+def test_control_header_language_selectors() -> None:
+    """
+    Verifies ControlHeaderWidget audio input and translation output dropdowns and signals.
+    """
+
+    _ = QApplication.instance() or QApplication([])
+    header: ControlHeaderWidget = ControlHeaderWidget()
+
+    # 1. Verify input language dropdown population
+    input_items: list[str] = [
+        str(header.combo_input_lang.itemData(i)) for i in range(header.combo_input_lang.count())
+    ]
+    assert "auto" in input_items
+    assert "en" in input_items
+    assert "fr" in input_items
+    assert "zh" in input_items
+    assert "ja" in input_items
+    assert "ko" in input_items
+
+    # 2. Verify target output language dropdown population
+    output_items: list[str] = [
+        str(header.combo_language.itemData(i)) for i in range(header.combo_language.count())
+    ]
+    assert "en" in output_items
+    assert "fr" in output_items
+
+    # 3. Test programmatic setters and signal emissions
+    received_input: list[str] = []
+    received_output: list[str] = []
+    header.input_language_changed.connect(received_input.append)
+    header.language_changed.connect(received_output.append)
+
+    header.set_input_language("ja")
+    assert header.combo_input_lang.currentData() == "ja"
+
+    header.set_target_language("fr")
+    assert header.combo_language.currentData() == "fr"
+
+
+def test_cli_language_options_parsing() -> None:
+    """
+    Verifies CLI parsing for input language and updated default window width.
+    """
+
+    parser: argparse.ArgumentParser = build_argument_parser()
+
+    # 1. Default language is auto and width is 660
+    args_default: argparse.Namespace = parser.parse_args([])
+    assert args_default.language == "auto"
+    assert args_default.width == 660
+
+    # 2. Custom language option
+    args_custom: argparse.Namespace = parser.parse_args(["--language", "ko", "--width", "720"])
+    assert args_custom.language == "ko"
+    assert args_custom.width == 720

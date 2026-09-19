@@ -39,6 +39,7 @@ class STTConfig:
         early_transcription_on_silence (int): Silence threshold in ms to begin early decoding.
         split_punctuation (str): Punctuation splitting preset for ongoing speech.
         max_sentence_duration (float): Maximum continuous speech seconds before forcing a split.
+        language (str): Whisper audio input language code or empty string for auto-detection.
     """
 
     model_size: str = "tiny"
@@ -50,6 +51,7 @@ class STTConfig:
     early_transcription_on_silence: int = 150
     split_punctuation: str = "sentence"
     max_sentence_duration: float = 12.0
+    language: str = ""
 
 
 @dataclass
@@ -65,6 +67,7 @@ class TranslationConfig:
         history_max_turns (int): Number of recent conversation turns to retain for context.
         request_timeout (float): HTTP request timeout in seconds.
         temperature (float): Generation temperature for faithful translation.
+        skip_languages (list[str]): Language codes to bypass LLM translation for.
     """
 
     server_url: str = "http://127.0.0.1:8080/v1/chat/completions"
@@ -74,6 +77,7 @@ class TranslationConfig:
     history_max_turns: int = 6
     request_timeout: float = 10.0
     temperature: float = 0.1
+    skip_languages: list[str] = field(default_factory=lambda: ["en", "fr"])
 
 
 @dataclass
@@ -89,11 +93,73 @@ class UIConfig:
         font_size (int): Base font size in points for transcribed and translated text.
     """
 
-    window_width: int = 580
+    window_width: int = 660
     window_height: int = 360
     window_opacity: float = 0.82
     always_on_top: bool = True
     font_size: int = 13
+
+
+@dataclass
+class PacePreset:
+    """
+    Tuned parameters corresponding to a specific conversational pace preset.
+
+    Attributes:
+        post_speech_silence (float): Duration in seconds of silence before finalizing sentence.
+        max_sentence_duration (float): Maximum continuous speech seconds before forcing a split.
+        similarity_threshold (float): Cosine similarity threshold for speaker clustering.
+        beam_size (int): Whisper decoding beam width.
+    """
+
+    post_speech_silence: float = 0.50
+    max_sentence_duration: float = 12.0
+    similarity_threshold: float = 0.55
+    beam_size: int = 3
+
+
+PACE_PRESETS: dict[str, PacePreset] = {
+    "fast": PacePreset(
+        post_speech_silence=0.30,
+        max_sentence_duration=7.0,
+        similarity_threshold=0.50,
+        beam_size=2,
+    ),
+    "medium": PacePreset(
+        post_speech_silence=0.50,
+        max_sentence_duration=12.0,
+        similarity_threshold=0.55,
+        beam_size=3,
+    ),
+    "accurate": PacePreset(
+        post_speech_silence=0.75,
+        max_sentence_duration=18.0,
+        similarity_threshold=0.62,
+        beam_size=5,
+    ),
+}
+
+
+@dataclass
+class DiarizationConfig:
+    """
+    Configuration parameters for CAM++ speaker diarization.
+
+    Attributes:
+        enabled (bool): Whether speaker identification and turn-splitting are active.
+        model_repo (str): HuggingFace repository identifier for CAM++ ONNX model.
+        model_filename (str): Model file name within the repository.
+        similarity_threshold (float): Minimum cosine similarity to match an existing speaker.
+        min_speech_duration (float): Minimum speech duration in seconds to compute embeddings.
+        max_speakers (int): Maximum number of distinct speaker centroids to track.
+    """
+
+    enabled: bool = True
+    model_repo: str = "welcomyou/campplus-3dspeaker-200k-onnx"
+    model_filename: str = "campplus_cn_en_common_200k.onnx"
+    similarity_threshold: float = 0.55
+    min_speech_duration: float = 0.4
+    max_speakers: int = 4
 
 
 @dataclass
@@ -106,9 +172,13 @@ class AppConfig:
         stt (STTConfig): Speech-to-text configuration instance.
         translation (TranslationConfig): Translation service configuration instance.
         ui (UIConfig): User interface configuration instance.
+        diarization (DiarizationConfig): Speaker diarization configuration instance.
+        pace_mode (str): Active conversational pace mode ('auto', 'fast', 'medium', 'accurate').
     """
 
     audio: AudioConfig = field(default_factory=AudioConfig)
     stt: STTConfig = field(default_factory=STTConfig)
     translation: TranslationConfig = field(default_factory=TranslationConfig)
     ui: UIConfig = field(default_factory=UIConfig)
+    diarization: DiarizationConfig = field(default_factory=DiarizationConfig)
+    pace_mode: str = "auto"

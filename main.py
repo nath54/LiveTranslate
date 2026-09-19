@@ -3,20 +3,21 @@ LiveTrans application launcher and command line interface.
 """
 
 # Import Modules
-import argparse
-import sys
 import os
+import sys
+import argparse
 
-from PySide6.QtCore import QMessageLogContext, qInstallMessageHandler, QtMsgType
-from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QFont
+from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QtMsgType, QMessageLogContext, qInstallMessageHandler
 
-from src.audio import AudioLoopbackCapture
-from src.translation import GemmaTranslator
-from src.romanizer import TextRomanizer
-from src.stt import WhisperStreamer
 from src.ui import LiveTransOverlay
+from src.stt import WhisperStreamer
+from src.audio import AudioLoopbackCapture
 from src.config import AppConfig
+from src.romanizer import TextRomanizer
+from src.diarization import SpeakerDiarizer
+from src.translation import GemmaTranslator
 
 
 def _qt_message_handler(
@@ -98,6 +99,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
         default=3,
         help="Beam size for transcription search (default: 3)",
     )
+    parser.add_argument(
+        "--language",
+        type=str,
+        default="auto",
+        help="Whisper audio input language (default: auto, or zh, ko, ja, en, fr, ...)",
+    )
 
     # Translation parameters
     parser.add_argument(
@@ -132,13 +139,19 @@ def build_argument_parser() -> argparse.ArgumentParser:
         default=6,
         help="Number of previous dialogue turns passed for context (default: 6)",
     )
+    parser.add_argument(
+        "--skip-langs",
+        type=str,
+        default="en,fr",
+        help="Comma-separated language codes to bypass LLM translation (default: en,fr)",
+    )
 
     # UI parameters
     parser.add_argument(
         "--width",
         type=int,
-        default=580,
-        help="Initial overlay window width in pixels (default: 580)",
+        default=660,
+        help="Initial overlay window width in pixels (default: 660)",
     )
     parser.add_argument(
         "--height",
@@ -156,6 +169,18 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--no-top",
         action="store_true",
         help="Disable always-on-top window behavior",
+    )
+    parser.add_argument(
+        "--pace",
+        type=str,
+        default="auto",
+        choices=["auto", "fast", "medium", "accurate"],
+        help="Conversational pace preset or auto adaptation (default: auto)",
+    )
+    parser.add_argument(
+        "--no-diarization",
+        action="store_true",
+        help="Disable CAM++ speaker identification and turn splitting",
     )
 
     return parser
@@ -185,6 +210,8 @@ def parse_arguments_to_config() -> AppConfig:
     config.stt.device = args.device
     config.stt.compute_type = args.compute_type
     config.stt.beam_size = args.beam_size
+    clean_lang: str = args.language.strip().lower()
+    config.stt.language = "" if clean_lang in ("auto", "") else clean_lang
 
     # Populate Translation config
     config.translation.server_url = args.translate_url
@@ -192,12 +219,22 @@ def parse_arguments_to_config() -> AppConfig:
     config.translation.target_language = args.target_lang
     config.translation.http_client = args.http_client
     config.translation.history_max_turns = args.history_turns
+    if args.skip_langs:
+        config.translation.skip_languages = [
+            lang.strip().lower() for lang in args.skip_langs.split(",") if lang.strip()
+        ]
+    else:
+        config.translation.skip_languages = []
 
     # Populate UI config
     config.ui.window_width = args.width
     config.ui.window_height = args.height
     config.ui.window_opacity = args.opacity
     config.ui.always_on_top = not args.no_top
+
+    # Populate Pace and Diarization config
+    config.pace_mode = args.pace
+    config.diarization.enabled = not args.no_diarization
 
     return config
 
@@ -253,13 +290,24 @@ def main() -> int:
         translator=translator,
     )
 
+    # Instantiate Speaker Diarizer if enabled
+    diarizer: SpeakerDiarizer | None = None
+    if config.diarization.enabled:
+        diarizer = SpeakerDiarizer(config=config.diarization)
+
     # Instantiate Whisper streaming engine
     whisper_engine: WhisperStreamer = WhisperStreamer(
         config=config.stt,
         on_partial_text=overlay.on_partial_transcription,
         on_final_text=overlay.on_final_transcription,
         on_vad_state=overlay.on_vad_state_changed,
+        diarizer=diarizer,
+        initial_pace_mode=config.pace_mode,
     )
+
+    # Connect overlay pace and input language selectors to whisper engine
+    overlay.header.pace_changed.connect(whisper_engine.set_pace_mode)
+    overlay.header.input_language_changed.connect(whisper_engine.set_language)
 
     # Route captured audio chunks directly to Whisper engine
     audio_monitor.on_audio_chunk = whisper_engine.feed_audio

@@ -30,6 +30,7 @@ class SubtitleCard(QFrame):
         roman_text: str = "",
         translation_text: str = "",
         language: str = "auto",
+        speaker: str = "",
     ) -> None:
         """
         Initializes the subtitle card with three distinct text tiers.
@@ -40,6 +41,7 @@ class SubtitleCard(QFrame):
             roman_text (str): Romanized phonetic reading.
             translation_text (str): Final translated sentence.
             language (str): Detected ISO language code.
+            speaker (str): Optional speaker label.
         """
 
         super().__init__(parent)
@@ -64,6 +66,7 @@ class SubtitleCard(QFrame):
         # 1. Source original transcription label
         self.source_label: QLabel = QLabel()
         self.source_label.setWordWrap(True)
+        self.source_label.setTextFormat(Qt.TextFormat.RichText)
         self.source_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.source_label.setStyleSheet("""
             QLabel {
@@ -106,7 +109,28 @@ class SubtitleCard(QFrame):
             roman_text=roman_text,
             translation_text=translation_text,
             language=language,
+            speaker=speaker,
         )
+
+    def _get_speaker_color(self, speaker: str) -> str:
+        """
+        Maps a speaker label to a distinct theme accent color.
+
+        Args:
+            speaker (str): Speaker identifier (e.g. 'Speaker 1').
+
+        Returns:
+            str: Hex color code string.
+        """
+
+        color_map: dict[str, str] = {
+            "Speaker 1": "#88C0D0",
+            "Speaker 2": "#D08770",
+            "Speaker 3": "#A3BE8C",
+            "Speaker 4": "#B48EAD",
+        }
+
+        return color_map.get(speaker, "#EBCB8B")
 
     def update_content(
         self,
@@ -114,6 +138,7 @@ class SubtitleCard(QFrame):
         roman_text: str,
         translation_text: str,
         language: str = "auto",
+        speaker: str = "",
     ) -> None:
         """
         Updates the displayed text across all three tiers.
@@ -123,11 +148,24 @@ class SubtitleCard(QFrame):
             roman_text (str): Phonetic transliteration.
             translation_text (str): Target translation.
             language (str): Spoken language code.
+            speaker (str): Optional identified speaker label.
         """
+
+        # Format optional speaker badge
+        speaker_badge: str = ""
+        if speaker:
+            spk_color: str = self._get_speaker_color(speaker)
+            speaker_badge = (
+                f'<span style="color: {spk_color}; font-weight: bold;">'
+                f'[{speaker}]</span> '
+            )
 
         # Format language badge
         lang_tag: str = language.upper() if language else "AUTO"
-        formatted_source: str = f"[{lang_tag}] {source_text}" if source_text else ""
+        lang_badge: str = f'<span style="color: #81A1C1;">[{lang_tag}]</span>'
+        formatted_source: str = (
+            f"{speaker_badge}{lang_badge} {source_text}" if source_text else ""
+        )
         self.source_label.setText(formatted_source)
 
         # Format romanized text

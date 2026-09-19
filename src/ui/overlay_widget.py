@@ -33,7 +33,7 @@ class OverlaySignals(QObject):
 
     Attributes:
         partial_speech_received (Signal): Emits (partial_text, language).
-        final_speech_received (Signal): Emits (card_id, text, roman, language).
+        final_speech_received (Signal): Emits (card_id, text, roman, language, speaker).
         translation_ready (Signal): Emits (card_id, translation_text).
         status_updated (Signal): Emits status message string.
         audio_metrics_received (Signal): Emits (rms, peak, spectrum_bars).
@@ -41,7 +41,7 @@ class OverlaySignals(QObject):
     """
 
     partial_speech_received: Signal = Signal(str, str)
-    final_speech_received: Signal = Signal(int, str, str, str)
+    final_speech_received: Signal = Signal(int, str, str, str, str)
     translation_ready: Signal = Signal(int, str)
     status_updated: Signal = Signal(str)
     audio_metrics_received: Signal = Signal(float, float, list)
@@ -161,11 +161,17 @@ class LiveTransOverlay(QWidget):
         # 1. Header toolbar
         self.header: ControlHeaderWidget = ControlHeaderWidget(self.body_frame)
         self.header.speaker_changed.connect(self._handle_speaker_changed)
+        self.header.input_language_changed.connect(self._handle_input_language_changed)
         self.header.language_changed.connect(self._handle_target_language_changed)
+        self.header.pace_changed.connect(self._handle_pace_changed)
         self.header.pause_toggled.connect(self._handle_pause_toggled)
         self.header.pin_toggled.connect(self._handle_pin_toggled)
         self.header.clear_requested.connect(self._handle_clear_requested)
         self.header.close_requested.connect(self.close)
+
+        # Synchronize header dropdowns with initial configuration
+        self.header.set_input_language(self.config.stt.language)
+        self.header.set_target_language(self.config.translation.target_language)
         body_layout.addWidget(self.header)
 
         # 2. Live Audio Spectrogram & Amplitude Visualizer
@@ -297,6 +303,7 @@ class LiveTransOverlay(QWidget):
 
         self.header.populate_speakers(speakers, default_speaker=matched_speaker)
         self.header.set_target_language(self.config.translation.target_language)
+        self.header.set_pace_mode(self.config.pace_mode)
         self.device_info_label.setText(f"🔊 {current_name}")
 
     def mousePressEvent(self, event: Any) -> None:
@@ -427,6 +434,19 @@ class LiveTransOverlay(QWidget):
         self.device_info_label.setText(f"🔊 {speaker_name}")
         self.signals.status_updated.emit(f"Switched to: {speaker_name}")
 
+    def _handle_input_language_changed(self, lang_code: str) -> None:
+        """
+        Handles audio input language updates from header dropdown.
+
+        Args:
+            lang_code (str): 'auto' or ISO language code ('zh', 'ja', 'en', etc.).
+        """
+
+        clean_code: str = "" if lang_code.lower() in ("auto", "") else lang_code.lower()
+        self.config.stt.language = clean_code
+        display_code: str = clean_code.upper() if clean_code else "AUTO"
+        self.signals.status_updated.emit(f"Input language: {display_code}")
+
     def _handle_target_language_changed(self, lang_code: str) -> None:
         """
         Updates the target language for upcoming translations.
@@ -437,6 +457,17 @@ class LiveTransOverlay(QWidget):
 
         self.config.translation.target_language = lang_code
         self.signals.status_updated.emit(f"Target language set to: {lang_code.upper()}")
+
+    def _handle_pace_changed(self, pace_code: str) -> None:
+        """
+        Handles conversational pace mode updates from header dropdown.
+
+        Args:
+            pace_code (str): 'auto', 'fast', 'medium', or 'accurate'.
+        """
+
+        self.config.pace_mode = pace_code
+        self.signals.status_updated.emit(f"Pace mode: {pace_code.upper()}")
 
     def _handle_pause_toggled(self, is_paused: bool) -> None:
         """
@@ -509,13 +540,19 @@ class LiveTransOverlay(QWidget):
 
         self.signals.partial_speech_received.emit(text, language)
 
-    def on_final_transcription(self, text: str, language: str) -> None:
+    def on_final_transcription(
+        self,
+        text: str,
+        language: str,
+        speaker: str = "",
+    ) -> None:
         """
         Called by WhisperStreamer when speech ends and sentence is finalized.
 
         Args:
             text (str): Finalized source transcription.
             language (str): Detected language code.
+            speaker (str): Optional identified speaker label.
         """
 
         if self._is_paused:
@@ -529,7 +566,19 @@ class LiveTransOverlay(QWidget):
         self._next_card_id += 1
 
         # Dispatch final speech to GUI thread
-        self.signals.final_speech_received.emit(card_id, text, roman_text, language)
+        self.signals.final_speech_received.emit(
+            card_id, text, roman_text, language, speaker
+        )
+
+        # Check if translation should be skipped
+        target_lang: str = self.config.translation.target_language.strip().lower()
+        skip_langs: list[str] = [
+            lang.strip().lower() for lang in self.config.translation.skip_languages
+        ]
+        lang_lower: str = language.strip().lower()
+
+        if lang_lower in skip_langs or lang_lower == target_lang:
+            return
 
         # Launch background translation request
         threading.Thread(
@@ -589,6 +638,7 @@ class LiveTransOverlay(QWidget):
         text: str,
         roman_text: str,
         language: str,
+        speaker: str,
     ) -> None:
         """
         Slot adding a finalized subtitle card into the history feed.
@@ -598,6 +648,7 @@ class LiveTransOverlay(QWidget):
             text (str): Spoken text.
             roman_text (str): Romanized text.
             language (str): Language code.
+            speaker (str): Identified speaker label.
         """
 
         # Create new permanent subtitle card
@@ -607,6 +658,7 @@ class LiveTransOverlay(QWidget):
             roman_text=roman_text,
             translation_text="",
             language=language,
+            speaker=speaker,
         )
 
         # Insert before bottom stretch
@@ -635,7 +687,7 @@ class LiveTransOverlay(QWidget):
         """
 
         card: SubtitleCard | None = self._card_registry.get(card_id)
-        if card is not None:
+        if card is not None and translation.strip():
             card.translation_label.setText(translation)
             card.translation_label.setVisible(True)
 
