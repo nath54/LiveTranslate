@@ -3,13 +3,13 @@ Translation client communicating with hosted translategemma4b using httpx and re
 """
 
 # Import Modules
-from typing import Any
 from dataclasses import dataclass
-
+from typing import Any
 import time
+import re
 
-import httpx
 import requests
+import httpx
 
 from src.config import TranslationConfig
 
@@ -197,6 +197,9 @@ class GemmaTranslator:
                 "<|im_start|>",
                 "<|im_end|>",
                 "<end_of_turn>",
+                "<start_of_turn>",
+                "<|file_separator|>",
+                "<|endoftext|>",
                 "<eos>",
                 "\n\n",
             ],
@@ -264,9 +267,21 @@ class GemmaTranslator:
 
         cleaned: str = raw_text.strip()
 
-        # Remove model template artifacts
-        for token in ("<|im_start|>", "<|im_end|>", "<|endoftext|>", "<end_of_turn>", "<eos>"):
+        # Remove known model template artifacts
+        template_tokens: tuple[str, ...] = (
+            "<|file_separator|>",
+            "<|im_start|>",
+            "<|im_end|>",
+            "<|endoftext|>",
+            "<start_of_turn>",
+            "<end_of_turn>",
+            "<eos>",
+        )
+        for token in template_tokens:
             cleaned = cleaned.replace(token, "")
+
+        # Strip any residual bracketed special tokens
+        cleaned = re.sub(r"<\|.*?\|>", "", cleaned)
 
         # Strip accidental quotes and surrounding whitespace
         cleaned = cleaned.strip("\"' \t\r\n")

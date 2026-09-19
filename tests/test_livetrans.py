@@ -3,14 +3,17 @@ Unit and integration tests for LiveTrans audio, romanization, and translation se
 """
 
 # Import Modules
+from unittest.mock import MagicMock
 from typing import Any
+import time
 
-import numpy as np
+import RealtimeSTT.core.realtime as r_realtime
 from numpy.typing import NDArray
+import numpy as np
 
+from src.config import AppConfig, STTConfig, TranslationConfig
 from src.translation import GemmaTranslator
 from src.romanizer import TextRomanizer
-from src.config import AppConfig, STTConfig, TranslationConfig
 from src.audio import AudioResampler
 from src.stt import WhisperStreamer
 
@@ -166,10 +169,12 @@ def test_gemma_translator_graceful_offline() -> None:
 
 def test_gemma_translator_clean_response() -> None:
     """
-    Tests sanitization of model prompt tokens and wrapping quote delimiters.
+    Tests sanitization of model prompt tokens, file separators, and wrapping quote delimiters.
     """
 
-    dirty_output: str = '  "Mon Dieu, ma voix est tellement rauque, non ?"<|im_start|>  '
+    dirty_output: str = (
+        '  "Mon Dieu, ma voix est tellement rauque, non ?"<|file_separator|><|im_start|>  '
+    )
     cleaned: str = GemmaTranslator._clean_response(dirty_output)  # pylint: disable=protected-access
     expected: str = "Mon Dieu, ma voix est tellement rauque, non ?"
     assert cleaned == expected, f"Failed cleaning: expected '{expected}', got '{cleaned}'"
@@ -185,6 +190,8 @@ def test_app_config_defaults() -> None:
     assert app_config.audio.sample_rate == 48000, "Audio rate default should be 48000"
     assert app_config.audio.target_sample_rate == 16000, "Whisper target rate must be 16000"
     assert app_config.stt.model_size == "tiny", "Default STT model size should be tiny"
+    assert app_config.stt.post_speech_silence == 0.5, "Default silence should be 0.5s"
+    assert app_config.stt.max_sentence_duration == 12.0, "Default max duration should be 12.0s"
     assert app_config.translation.model_name == "translategemma4b", "LLM must be translategemma4b"
     assert app_config.translation.target_language == "en", "Default target lang must be en"
     assert app_config.ui.window_opacity == 0.82, "Default UI opacity should be 0.82"
@@ -218,3 +225,39 @@ def test_whisper_streamer_pause_and_state() -> None:
 
     streamer.set_paused(False)
     assert not streamer._is_paused, "Pause flag must be False"  # pylint: disable=protected-access
+
+
+def test_whisper_streamer_punctuation_and_duration_cutoff() -> None:
+    """
+    Verifies that CJK punctuation marks are registered and speech duration triggers recorder cut.
+    """
+
+    # 1. Verify CJK punctuation presets and helper functions
+    assert "。" in r_realtime._SUPPORTED_PUNCTUATION_SPLIT_MARKS  # pylint: disable=protected-access
+    assert "？" in r_realtime._SUPPORTED_PUNCTUATION_SPLIT_MARKS  # pylint: disable=protected-access
+    assert "！" in r_realtime._SUPPORTED_PUNCTUATION_SPLIT_MARKS  # pylint: disable=protected-access
+    assert "。" in r_realtime._PUNCTUATION_SPLIT_MARK_PRESETS["sentence"]  # pylint: disable=protected-access
+
+    # Test CJK normalized words extraction
+    cjk_words: list[str] = r_realtime._normalized_words("我们先从说起吧。")  # pylint: disable=protected-access
+    assert len(cjk_words) >= 6, "Must extract CJK character tokens"
+
+    # 2. Verify max sentence duration triggers recorder.stop() when clause boundary is present
+    config: STTConfig = STTConfig(
+        max_sentence_duration=3.0,
+    )
+    streamer: WhisperStreamer = WhisperStreamer(config=config)
+
+    # Attach mock recorder
+    mock_recorder: MagicMock = MagicMock()
+    streamer._recorder = mock_recorder  # pylint: disable=protected-access
+
+    # Simulate ongoing speech started 4 seconds ago (> 3.0s) with clause boundary
+    streamer._speech_start_time = time.time() - 4.0  # pylint: disable=protected-access
+
+    # Trigger interim update with comma clause mark
+    streamer._handle_realtime_update("こんにちは、元気？")  # pylint: disable=protected-access
+
+    # Verify stop() was invoked to finalize long utterance
+    mock_recorder.stop.assert_called_once()
+    assert streamer.get_detected_language() == "ja"

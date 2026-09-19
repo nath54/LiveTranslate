@@ -3,17 +3,20 @@ Audio loopback capture service with dynamic speaker hot-swapping and live AGC me
 """
 
 # Import Modules
-from typing import Any
 from collections.abc import Callable
-
-import time
+from typing import Any
 import threading
+import warnings
+import time
 
-import numpy as np
-import soundcard as sc
 from numpy.typing import NDArray
+import soundcard as sc
+import numpy as np
 
 from src.audio.audio_resampler import AudioResampler
+
+# Suppress WASAPI buffer discontinuity warnings under heavy GPU inference loads
+warnings.filterwarnings("ignore", category=sc.SoundcardRuntimeWarning)
 
 
 class AudioLoopbackCapture:
@@ -33,7 +36,7 @@ class AudioLoopbackCapture:
         self,
         sample_rate: int = 48000,
         target_sample_rate: int = 16000,
-        buffer_frames: int = 1024,
+        buffer_frames: int = 2048,
         on_audio_chunk: Callable[[NDArray[np.float32]], None] | None = None,
         on_audio_metrics: Callable[[float, float, list[float]], None] | None = None,
     ) -> None:

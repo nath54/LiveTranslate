@@ -3,18 +3,42 @@ LiveTrans application launcher and command line interface.
 """
 
 # Import Modules
-import sys
 import argparse
+import sys
+import os
 
-from PySide6.QtGui import QFont
+from PySide6.QtCore import QMessageLogContext, qInstallMessageHandler, QtMsgType
 from PySide6.QtWidgets import QApplication
+from PySide6.QtGui import QFont
 
-from src.ui import LiveTransOverlay
-from src.stt import WhisperStreamer
-from src.config import AppConfig
 from src.audio import AudioLoopbackCapture
-from src.romanizer import TextRomanizer
 from src.translation import GemmaTranslator
+from src.romanizer import TextRomanizer
+from src.stt import WhisperStreamer
+from src.ui import LiveTransOverlay
+from src.config import AppConfig
+
+
+def _qt_message_handler(
+    msg_type: QtMsgType,
+    context: QMessageLogContext,
+    message: str,
+) -> None:
+    """
+    Suppresses benign Qt warnings on Windows (point size conversion and OleInitialize).
+
+    Args:
+        msg_type (QtMsgType): Log severity level.
+        context (QMessageLogContext): Context metadata for the message.
+        message (str): Log message text.
+    """
+
+    _ = (msg_type, context)
+    if "setPointSize" in message or "OleInitialize" in message:
+        return
+
+    if msg_type in (QtMsgType.QtWarningMsg, QtMsgType.QtCriticalMsg, QtMsgType.QtFatalMsg):
+        sys.stderr.write(f"Qt: {message}\n")
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
@@ -45,8 +69,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--buffer-frames",
         type=int,
-        default=1024,
-        help="Audio buffer slice size in frames (default: 1024)",
+        default=2048,
+        help="Audio buffer slice size in frames (default: 2048)",
     )
 
     # Whisper STT parameters
@@ -185,6 +209,19 @@ def main() -> int:
     Returns:
         int: Exit status code.
     """
+
+    # Configure UTF-8 streams on Windows to prevent UnicodeEncodeError on CJK characters
+    if sys.stdout is not None and hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if sys.stderr is not None and hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+    # Disable HuggingFace symlinks on Windows to prevent WinError 1314 privilege errors
+    os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
+    os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+
+    # Install custom Qt message filter to eliminate benign Windows console noise
+    qInstallMessageHandler(_qt_message_handler)
 
     # Parse arguments
     config: AppConfig = parse_arguments_to_config()

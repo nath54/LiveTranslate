@@ -6,11 +6,16 @@ Real-time streaming speech-to-text transcriber using Whisper with VAD callbacks.
 from collections.abc import Callable
 import threading
 from typing import Any
+import logging
 import time
+import os
+import re
 
 from RealtimeSTT.transcription_engines.faster_whisper_engine import FasterWhisperEngine
-from numpy.typing import NDArray
+import RealtimeSTT.core.realtime as r_realtime
+import huggingface_hub.constants as hf_constants
 from RealtimeSTT import AudioToTextRecorder
+from numpy.typing import NDArray
 import numpy as np
 
 from src.config import STTConfig
@@ -27,9 +32,70 @@ def _dummy_close(self: Any) -> None:
     _ = self
 
 
+def _cjk_normalized_words(text: str) -> list[str]:
+    """
+    Extracts alphanumeric words and CJK characters to enable punctuation splitting.
+
+    Args:
+        text (str): Raw transcription text to normalize.
+
+    Returns:
+        list[str]: Extracted words or CJK characters.
+    """
+
+    return re.findall(
+        r"[a-z0-9]+|[\u4e00-\u9fff]|[\u3040-\u30ff]|[\uac00-\ud7af]+",
+        (text or "").casefold(),
+    )
+
+
+def _cjk_last_strong_punctuation_index(text: str, before_index: int) -> int:
+    """
+    Finds the index of the latest strong punctuation mark including CJK full-width marks.
+
+    Args:
+        text (str): Search text.
+        before_index (int): Upper bound index.
+
+    Returns:
+        int: Index of last strong punctuation mark, or -1.
+    """
+
+    indices: list[int] = [
+        text.rfind(".", 0, before_index),
+        text.rfind("?", 0, before_index),
+        text.rfind("!", 0, before_index),
+        text.rfind("。", 0, before_index),
+        text.rfind("？", 0, before_index),
+        text.rfind("！", 0, before_index),
+    ]
+
+    return max(indices)
+
+
 # Patch missing close method in upstream FasterWhisperEngine
 if not hasattr(FasterWhisperEngine, "close"):
     FasterWhisperEngine.close = _dummy_close
+
+# Patch RealtimeSTT punctuation presets to include full-width CJK punctuation marks
+# pylint: disable=protected-access
+if hasattr(r_realtime, "_SUPPORTED_PUNCTUATION_SPLIT_MARKS"):
+    r_realtime._SUPPORTED_PUNCTUATION_SPLIT_MARKS.update({"。", "？", "！", "，"})
+if hasattr(r_realtime, "_PUNCTUATION_SPLIT_MARK_PRESETS"):
+    r_realtime._PUNCTUATION_SPLIT_MARK_PRESETS["sentence"] = (
+        ".", "?", "!", "。", "？", "！",
+    )
+    r_realtime._PUNCTUATION_SPLIT_MARK_PRESETS["all"] = (
+        ".", "?", "!", ",", "...", "—", "–", "-", "。", "？", "！", "，",
+    )
+if hasattr(r_realtime, "_normalized_words"):
+    r_realtime._normalized_words = _cjk_normalized_words
+if hasattr(r_realtime, "_last_strong_punctuation_index"):
+    r_realtime._last_strong_punctuation_index = _cjk_last_strong_punctuation_index
+# pylint: enable=protected-access
+
+# Suppress verbose RealtimeSTT debug logs that fail to encode on Windows cp1252 consoles
+logging.getLogger("realtimestt").setLevel(logging.WARNING)
 
 
 class WhisperStreamer:
@@ -69,6 +135,7 @@ class WhisperStreamer:
         # State tracking
         self._is_active: bool = False
         self._is_paused: bool = False
+        self._speech_start_time: float = 0.0
         self._current_language: str = "unknown"
         self._recorder: Any = None
         self._worker_thread: threading.Thread | None = None
@@ -87,6 +154,12 @@ class WhisperStreamer:
             self._is_active = True
             self._is_paused = False
 
+        # Disable HuggingFace symlinks on Windows to avoid WinError 1314 privilege requirement
+        os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
+        os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+        hf_constants.HF_HUB_DISABLE_SYMLINKS = True
+        hf_constants.HF_HUB_DISABLE_SYMLINKS_WARNING = True
+
         # Initialize the underlying RealtimeSTT engine
         # Whisper performs native transcription only (never translation)
         self._recorder = AudioToTextRecorder(
@@ -102,6 +175,15 @@ class WhisperStreamer:
             use_microphone=False,
             spinner=False,
             enable_realtime_transcription=True,
+            early_transcription_on_silence=self.config.early_transcription_on_silence,
+            realtime_punctuation_split_marks=self.config.split_punctuation,
+            final_transcription_word_timestamps=True,
+            initial_prompt=(
+                "Please transcribe accurately with punctuation: "
+                "periods, commas, question marks."
+            ),
+            no_log_file=True,
+            use_extended_logging=False,
             on_vad_start=self._handle_vad_start,
             on_vad_stop=self._handle_vad_stop,
             on_realtime_transcription_update=self._handle_realtime_update,
@@ -261,6 +343,7 @@ class WhisperStreamer:
                     break
 
                 cleaned: str = sentence.strip() if sentence else ""
+                self._speech_start_time = 0.0
                 if cleaned and not self._is_paused:
                     lang: str = self._resolve_language(cleaned)
                     self._current_language = lang
@@ -272,23 +355,25 @@ class WhisperStreamer:
 
     def _handle_vad_start(self) -> None:
         """
-        Dispatches voice activity start event.
+        Dispatches voice activity start event and marks speech beginning.
         """
 
+        self._speech_start_time = time.time()
         if self.on_vad_state is not None:
             self.on_vad_state(True)
 
     def _handle_vad_stop(self) -> None:
         """
-        Dispatches voice activity stop event.
+        Dispatches voice activity stop event and resets speech timer.
         """
 
+        self._speech_start_time = 0.0
         if self.on_vad_state is not None:
             self.on_vad_state(False)
 
     def _handle_realtime_update(self, text: str) -> None:
         """
-        Dispatches in-progress transcription updates.
+        Dispatches in-progress transcription updates and bounds speech accumulation duration.
 
         Args:
             text (str): Interim transcribed text chunk.
@@ -304,6 +389,23 @@ class WhisperStreamer:
         # Emit to partial listener
         if self.on_partial_text is not None:
             self.on_partial_text(cleaned_text, self._current_language)
+
+        # Cut sentence early if speaker talks continuously without pause
+        if self._speech_start_time <= 0.0:
+            self._speech_start_time = time.time()
+        else:
+            elapsed_sec: float = time.time() - self._speech_start_time
+            if elapsed_sec >= self.config.max_sentence_duration:
+                # Require a clause or punctuation boundary to avoid slicing mid-word
+                clause_marks: tuple[str, ...] = ("，", ",", "。", ".", "？", "?", "！", "!")
+                has_boundary: bool = any(mark in cleaned_text for mark in clause_marks)
+                if has_boundary or elapsed_sec >= self.config.max_sentence_duration * 1.5:
+                    self._speech_start_time = time.time()
+                    if self._recorder is not None:
+                        try:
+                            self._recorder.stop()
+                        except Exception:
+                            pass
 
     def _handle_stabilized_update(self, text: str) -> None:
         """

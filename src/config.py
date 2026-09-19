@@ -20,7 +20,7 @@ class AudioConfig:
 
     sample_rate: int = 48000
     target_sample_rate: int = 16000
-    buffer_frames: int = 1024
+    buffer_frames: int = 2048
     speaker_name: str | None = None
 
 
@@ -30,12 +30,15 @@ class STTConfig:
     Configuration parameters for Whisper speech-to-text recognition.
 
     Attributes:
-        model_size (str): Whisper model identifier (e.g. tiny, base, small).
+        model_size (str): Whisper model identifier (e.g. tiny, base, small, large-v3).
         device (str): Computation device (cuda or cpu).
         compute_type (str): Quantization or precision type (e.g. float16, int8, default).
         beam_size (int): Beam search width for transcription.
         vad_sensitivity (float): Voice activity detection sensitivity threshold.
         post_speech_silence (float): Duration in seconds of silence before finalizing sentence.
+        early_transcription_on_silence (int): Silence threshold in ms to begin early decoding.
+        split_punctuation (str): Punctuation splitting preset for ongoing speech.
+        max_sentence_duration (float): Maximum continuous speech seconds before forcing a split.
     """
 
     model_size: str = "tiny"
@@ -43,7 +46,10 @@ class STTConfig:
     compute_type: str = "default"
     beam_size: int = 3
     vad_sensitivity: float = 0.4
-    post_speech_silence: float = 0.6
+    post_speech_silence: float = 0.5
+    early_transcription_on_silence: int = 150
+    split_punctuation: str = "sentence"
+    max_sentence_duration: float = 12.0
 
 
 @dataclass
